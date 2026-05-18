@@ -1,0 +1,72 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Agrega atributos de recursos comunes a todas las señales
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "local-dev"
+        action: insert
+  # Procesa en lotes para eficiencia
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # Debug en consola del collector (útil para verificar que llegan datos)
+  debug:
+    verbosity: normal
+
+  # Jaeger – recibe trazas via OTLP gRPC (Jaeger 1.35+ soporta OTLP nativo)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus – expone métricas en /metrics para que Prometheus las scrape
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "otel"
+    send_timestamps: true
+    metric_expiration: 3m
+
+  # ── New Relic (descomentar y configurar NEW_RELIC_LICENSE_KEY en docker-compose) ──
+  # otlp/newrelic:
+  #   endpoint: otlp.nr-data.net:4317
+  #   headers:
+  #     api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+  # ── Dynatrace (descomentar y configurar DT_ENV_ID + DT_API_TOKEN en docker-compose) ──
+  # otlphttp/dynatrace:
+  #   endpoint: https://${env:DT_ENV_ID}.live.dynatrace.com/api/v2/otlp
+  #   headers:
+  #     Authorization: "Api-Token ${env:DT_API_TOKEN}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [debug, otlp/jaeger]
+      # Para New Relic agregar: otlp/newrelic
+      # Para Dynatrace agregar: otlphttp/dynatrace
+
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [debug, prometheus]
+      # Para New Relic agregar: otlp/newrelic
+      # Para Dynatrace agregar: otlphttp/dynatrace
+
+    logs:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [debug]
+      # Para New Relic agregar: otlp/newrelic
+      # Para Dynatrace agregar: otlphttp/dynatrace

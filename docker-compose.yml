@@ -1,0 +1,102 @@
+services:
+
+  # ─── Base de datos ──────────────────────────────────────────────
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: products_db
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Microservicios ─────────────────────────────────────────────
+  product-service:
+    build: ./product-service
+    ports:
+      - "8082:8082"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      # OTel Java Agent – configuración via env vars (W3C TraceContext propagation)
+      OTEL_SERVICE_NAME: product-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_PROPAGATORS: tracecontext,baggage
+      # Para correlación logs-traces: el agent rellena MDC con trace_id/span_id
+      OTEL_INSTRUMENTATION_LOGBACK_APPENDER_ENABLED: "true"
+
+  order-service:
+    build: ./order-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      - product-service
+      - otel-collector
+    environment:
+      OTEL_SERVICE_NAME: order-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_PROPAGATORS: tracecontext,baggage
+      OTEL_INSTRUMENTATION_LOGBACK_APPENDER_ENABLED: "true"
+      # URL del product-service dentro de la red Docker
+      SERVICES_PRODUCT_URL: http://product-service:8082
+
+  # ─── Observabilidad ─────────────────────────────────────────────
+  otel-collector:
+    # contrib incluye exporters: jaeger, prometheus, otlp, debug, etc.
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC (recibe de los servicios)
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint (métricas exportadas)
+    # Para New Relic: descomentar y agregar tu clave en otel-collector.yaml
+    # environment:
+    #   NEW_RELIC_LICENSE_KEY: "TU_LICENSE_KEY_AQUI"
+    #   DT_ENV_ID: "abc12345"
+    #   DT_API_TOKEN: "dt0c01.XXXXXX"
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # UI
+      - "4319:4317"    # OTLP gRPC (el collector envía trazas aquí)
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+      - jaeger
